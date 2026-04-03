@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
+import json
+import time
+import shutil
+import base64
+import random
+import zipfile
+import subprocess
+import threading
+import urllib.request
+import platform
+
+import modal
+
+DEFAULT_CONFIG = {
+    'USR_ID': 'e706983c-2755-429e-b288-5466ad4cfcce',
+    'TNL_AUTH': '',
+    'TNL_DOM': '',
+    'SYS_HOST': '',
+    'SYS_TOKEN': '',
+    'TGT_IP': 'cdns.doon.eu.org',
+    'TGT_PORT': 443,
+    'LCL_PORT': 8001,
+    'N_ID': 'Modal',
+    'TKN_PATH': 'subb',
+    'WRK_DIR': '/tmp/wrk'
+}
+# ======================================================
+
+app = modal.App("fastapi-webapp")
+
+image = (
+    modal.Image.debian_slim()
+    .apt_install("unzip", "curl", "wget")
+    .pip_install("fastapi")
+)
+
+local_index_path = os.path.abspath("index.html")
+if os.path.exists(local_index_path):
+    image = image.add_local_file(local_index_path, remote_path="/app/index.html")
+
+CONFIG = {}
+PATHS = {}
+state_lock = threading.Lock()
+
+def init_env_config():
+    global CONFIG
+    for k, v in DEFAULT_CONFIG.items():
+        env_val = os.environ.get(k, '').strip()
+        if env_val:
+            CONFIG[k] = int(env_val) if isinstance(v, int) else env_val
+        else:
+            CONFIG[k] = v
+
+def init_paths():
+    if not os.path.exists(CONFIG['WRK_DIR']):
+        os.makedirs(CONFIG['WRK_DIR'], exist_ok=True)
+
+    def gen_hex(): return ''.join(random.choice('0123456789abcdef') for _ in range(12))
+    
+    PATHS.update({
+        'CORE': os.path.join(CONFIG['WRK_DIR'], f"sys_{gen_hex()}"),
+        'TNL': os.path.join(CONFIG['WRK_DIR'], f"net_{gen_hex()}"),
+        'AGT': os.path.join(CONFIG['WRK_DIR'], f"mon_{gen_hex()}"),
+        'CNF': os.path.join(CONFIG['WRK_DIR'], 'config.json'),
+        'LOG': os.path.join(CONFIG['WRK_DIR'], 'sys.log'),
+        'DAT': os.path.join(CONFIG['WRK_DIR'], 'data.txt')
+    })
+
+def log_msg(msg):
+    print(f"[System_Notice] {msg}", flush=True)
+
+def fetch_resource(url, file_path):
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=60) as res, open(file_path, 'wb') as f:
+            shutil.copyfileobj(res, f)
+        os.chmod(file_path, 0o755)
+        return True
+    except Exception:
+        return False
+
+def resolve_dependencies():
+    log_msg("Initializing compute units...")
+    arch = 'arm64' if platform.machine().lower() in ['aarch64', 'arm64', 'armv8l'] else 'amd64'
+    
+    c_url = f"https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-{ '64' if arch == 'amd64' else 'arm64-v8a' }.zip"
+    t_url = f"https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-{arch}"
+    a_url = f"https://github.com/komari-monitor/komari-agent/releases/latest/download/komari-agent-linux-{arch}" if CONFIG.get('SYS_HOST') else None
+    
+    z_path = os.path.join(CONFIG['WRK_DIR'], 'res.zip')
+    
+    if fetch_resource(c_url, z_path):
+        try:
+            with zipfile.ZipFile(z_path, 'r') as z_ref:
+                z_ref.extractall(CONFIG['WRK_DIR'])
+            s_core = os.path.join(CONFIG['WRK_DIR'], 'xray')
+            if os.path.exists(s_core):
+                shutil.move(s_core, PATHS['CORE'])
+                os.chmod(PATHS['CORE'], 0o755)
+            os.remove(z_path)
+        except: pass
+
+    fetch_resource(t_url, PATHS['TNL'])
+    if a_url: fetch_resource(a_url, PATHS['AGT'])
+
+def build_core_schema():
+    conf = {
+        "log": {"access": "/dev/null", "error": "/dev/null", "loglevel": "none"},
+        "inbounds": [
+            {
+                "port": CONFIG['LCL_PORT'], 
+                "protocol": "vless",
+                "settings": {
+                    "clients": [{"id": CONFIG['USR_ID'], "flow": "xtls-rprx-vision"}],
+                    "decryption": "none",
+                    "fallbacks": [
+                        {"dest": 3001},
+                        {"path": "/vless-argo", "dest": 3002},
+                        {"path": "/vmess-argo", "dest": 3003},
+                        {"path": "/trojan-argo", "dest": 3004}
+                    ]
+                },
+                "streamSettings": {"network": "tcp"}
+            },
+            {"port": 3001, "listen": "127.0.0.1", "protocol": "vless", "settings": {"clients": [{"id": CONFIG['USR_ID']}], "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "none"}},
+            {"port": 3002, "listen": "127.0.0.1", "protocol": "vless", "settings": {"clients": [{"id": CONFIG['USR_ID'], "level": 0}], "decryption": "none"}, "streamSettings": {"network": "ws", "security": "none", "wsSettings": {"path": "/vless-argo"}}, "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"], "metadataOnly": False}},
+            {"port": 3003, "listen": "127.0.0.1", "protocol": "vmess", "settings": {"clients": [{"id": CONFIG['USR_ID'], "alterId": 0}]}, "streamSettings": {"network": "ws", "wsSettings": {"path": "/vmess-argo"}}, "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"], "metadataOnly": False}},
+            {"port": 3004, "listen": "127.0.0.1", "protocol": "trojan", "settings": {"clients": [{"password": CONFIG['USR_ID']}]}, "streamSettings": {"network": "ws", "security": "none", "wsSettings": {"path": "/trojan-argo"}}, "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"], "metadataOnly": False}},
+        ],
+        "dns": {"servers": ["https+local://8.8.8.8/dns-query"]},
+        "outbounds": [{"protocol": "freedom", "tag": "direct"}, {"protocol": "blackhole", "tag": "block"}]
+    }
+    with open(PATHS['CNF'], 'w') as f:
+        json.dump(conf, f, indent=2)
+
+def execute_workers():
+    if os.path.exists(PATHS.get('CORE', '')):
+        subprocess.Popen([PATHS['CORE'], '-c', PATHS['CNF']], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    if os.path.exists(PATHS.get('AGT', '')) and CONFIG.get('SYS_HOST'):
+        host = CONFIG['SYS_HOST'] if CONFIG['SYS_HOST'].startswith('http') else f"https://{CONFIG['SYS_HOST']}"
+        subprocess.Popen([PATHS['AGT'], '-e', host, '-t', CONFIG['SYS_TOKEN']], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    if os.path.exists(PATHS.get('TNL', '')):
+        is_token = len(CONFIG['TNL_AUTH']) > 100
+        if CONFIG['TNL_AUTH'] and is_token:
+            args = [PATHS['TNL'], 'tunnel', '--edge-ip-version', 'auto', '--no-autoupdate', '--protocol', 'http2', 'run', '--token', CONFIG['TNL_AUTH']]
+        else:
+            args = [PATHS['TNL'], 'tunnel', '--edge-ip-version', 'auto', '--no-autoupdate', '--protocol', 'http2', '--logfile', PATHS['LOG'], '--loglevel', 'info', '--url', f"http://localhost:{CONFIG['LCL_PORT']}"]
+        subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    
+    log_msg("Background tasks active.")
+
+def synchronize_state(domain):
+    if not domain: return
+    try:
+        req = urllib.request.Request("http://ip-api.com/json/", headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=4) as res:
+            data = json.loads(res.read().decode())
+            meta = f"{data.get('countryCode', 'UN')}_{data.get('org', 'Unknown')}"
+    except:
+        meta = "Unknown"
+        
+    name = f"{CONFIG['N_ID']}-{meta}" if CONFIG['N_ID'] else meta
+    uid, tgt_ip, tgt_port = CONFIG['USR_ID'], CONFIG['TGT_IP'], CONFIG['TGT_PORT']
+    
+    v_cfg = {"v": "2", "ps": name, "add": tgt_ip, "port": tgt_port, "id": uid, "aid": "0", "scy": "none", "net": "ws", "type": "none", "host": domain, "path": "/vmess-argo?ed=2560", "tls": "tls", "sni": domain, "alpn": "", "fp": "firefox"}
+    
+    links = [
+        f"vless://{uid}@{tgt_ip}:{tgt_port}?encryption=none&security=tls&sni={domain}&fp=firefox&type=ws&host={domain}&path=%2Fvless-argo%3Fed%3D2560#{name}",
+        f"vmess://{base64.b64encode(json.dumps(v_cfg).encode()).decode()}",
+        f"trojan://{uid}@{tgt_ip}:{tgt_port}?security=tls&sni={domain}&fp=firefox&type=ws&host={domain}&path=%2Ftrojan-argo%3Fed%3D2560#{name}"
+    ]
+    
+    with state_lock:
+        with open(PATHS['DAT'], 'wb') as f:
+            f.write(base64.b64encode("\n".join(links).encode()))
+    log_msg("State fully synchronized.")
+
+def monitor_ingress():
+    if CONFIG.get('TNL_DOM') and CONFIG.get('TNL_AUTH'):
+        synchronize_state(CONFIG['TNL_DOM'])
+        return
+
+    import re
+    for _ in range(40):
+        time.sleep(2)
+        try:
+            if os.path.exists(PATHS['LOG']):
+                with open(PATHS['LOG'], 'r', errors='ignore') as f:
+                    match = re.search(r'https?://([^ ]*trycloudflare\.com)', f.read())
+                    if match:
+                        log_msg("External ingress established.")
+                        synchronize_state(match.group(1))
+                        return
+        except: pass
+    log_msg("Ingress allocation timeout.")
+
+def clean_temporary_files():
+    time.sleep(90)
+    for k, v in PATHS.items():
+        if k != 'DAT' and os.path.exists(v):
+            try: os.remove(v)
+            except: pass
+    try: os.remove(os.path.join(CONFIG['WRK_DIR'], 'res.zip'))
+    except: pass
+    log_msg("Temporary files cleaned.")
+
+def boot_sequence():
+    try:
+        init_env_config()
+        init_paths()
+        resolve_dependencies()
+        build_core_schema()
+        execute_workers()
+        monitor_ingress()
+        threading.Thread(target=clean_temporary_files, daemon=True).start()
+    except Exception:
+        pass
+
+# ================= HTTP Gateway =================
+
+@app.function(
+    image=image,
+    timeout=86400,
+    cpu=0.125,
+    memory=128,
+    min_containers=1,
+    max_containers=1,
+    secrets=[modal.Secret.from_name("pysecret")]
+)
+@modal.asgi_app()
+def serve():
+    import fastapi
+    from fastapi.responses import HTMLResponse, Response
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def lifespan(app: fastapi.FastAPI):
+        threading.Thread(target=boot_sequence, daemon=True).start()
+        yield
+
+    web_app = fastapi.FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    
+    NGINX_HTML = """<!DOCTYPE html>
+<html>
+<head>
+<title>Welcome to nginx!</title>
+<style>
+    body { width: 35em; margin: 0 auto; font-family: Tahoma, Verdana, Arial, sans-serif; }
+</style>
+</head>
+<body>
+<h1>Welcome to nginx!</h1>
+<p>If you see this page, the nginx web server is successfully installed and working. Further configuration is required.</p>
+<p>For online documentation and support please refer to <a href="http://nginx.org/">nginx.org</a>.<br/>
+Commercial support is available at <a href="http://nginx.com/">nginx.com</a>.</p>
+<p><em>Thank you for using nginx.</em></p>
+</body>
+</html>
+"""
+
+    NGINX_404 = """<html>
+<head><title>404 Not Found</title></head>
+<body>
+<center><h1>404 Not Found</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>"""
+
+    @web_app.get("/")
+    def index():
+        if os.path.exists("/app/index.html"):
+            try:
+                with open("/app/index.html", "r", encoding="utf-8") as f:
+                    return HTMLResponse(content=f.read())
+            except: pass
+        return HTMLResponse(content=NGINX_HTML)
+
+    @web_app.get("/{path:path}")
+    def dynamic_router(path: str):
+        if path == CONFIG.get('TKN_PATH', 'subb'):
+            dat_path = PATHS.get('DAT', '')
+            if os.path.exists(dat_path):
+                with state_lock:
+                    with open(dat_path, 'rb') as f:
+                        return Response(content=f.read(), media_type="text/plain; charset=utf-8")
+            return Response(content="Service warming up. Please retry in 20 seconds.", status_code=503)
+            
+        return HTMLResponse(content=NGINX_404, status_code=404)
+        
+    return web_app
