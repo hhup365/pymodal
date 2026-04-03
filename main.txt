@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+import sys
 import json
 import time
 import shutil
@@ -15,17 +16,19 @@ import platform
 
 import modal
 
+# ================= Configuration Area =================
 DEFAULT_CONFIG = {
-    'USR_ID': 'e706983c-2755-429e-b288-5466ad4cfcce',
+    'USR_ID': 'a968da0b-9839-41f3-9f9d-af4b4a11dd3d',
     'TNL_AUTH': '',
     'TNL_DOM': '',
     'SYS_HOST': '',
     'SYS_TOKEN': '',
-    'TGT_IP': 'cdns.doon.eu.org',
+    'TGT_IP': 'sub.danfeng.eu.org',
     'TGT_PORT': 443,
     'LCL_PORT': 8001,
     'N_ID': 'Modal',
     'TKN_PATH': 'subb',
+    'RST_PATH': 'restart',
     'WRK_DIR': '/tmp/wrk'
 }
 # ======================================================
@@ -226,11 +229,11 @@ def boot_sequence():
 
 @app.function(
     image=image,
-    timeout=86400,
-    cpu=0.125,
-    memory=128,
-    min_containers=1,
-    max_containers=1,
+    timeout=86400,          # 24 hours lifecycle
+    cpu=0.125,              # Minimum CPU to save cost
+    memory=128,             # Minimum RAM to save cost
+    min_containers=1,       # Keep 1 container always running
+    max_containers=1,       # Prevent scaling up
     secrets=[modal.Secret.from_name("pysecret")]
 )
 @modal.asgi_app()
@@ -283,6 +286,16 @@ Commercial support is available at <a href="http://nginx.com/">nginx.com</a>.</p
 
     @web_app.get("/{path:path}")
     def dynamic_router(path: str):
+        if path == CONFIG.get('RST_PATH', 'restart'):
+            def kill_container():
+                time.sleep(1)
+                os._exit(0)
+            threading.Thread(target=kill_container, daemon=True).start()
+            return Response(
+                content="Signal accepted. System rebooting... IP shift in progress. Please wait 30 seconds.", 
+                status_code=200
+            )
+
         if path == CONFIG.get('TKN_PATH', 'subb'):
             dat_path = PATHS.get('DAT', '')
             if os.path.exists(dat_path):
