@@ -18,12 +18,12 @@ import modal
 
 # ================= Configuration Area =================
 DEFAULT_CONFIG = {
-    'USR_ID': 'a968da0b-9839-41f3-9f9d-af4b4a11dd3d',
+    'USR_ID': 'd1f8d83c-2430-4efc-ac75-7a2d0522d8d7',
     'TNL_AUTH': '',
     'TNL_DOM': '',
-    'SYS_HOST': '',
+    'SYS_HOST': 'https://komari.xx.com',
     'SYS_TOKEN': '',
-    'TGT_IP': 'sub.danfeng.eu.org',
+    'TGT_IP': 'avido.cf.3666888.xyz',
     'TGT_PORT': 443,
     'LCL_PORT': 8001,
     'N_ID': 'Modal',
@@ -234,6 +234,8 @@ def boot_sequence():
     memory=128,             # Minimum RAM to save cost
     min_containers=1,       # Keep 1 container always running
     max_containers=1,       # Prevent scaling up
+    region=["ap-northeast"],
+    routing_region="ap-south",
     secrets=[modal.Secret.from_name("pysecret")]
 )
 @modal.asgi_app()
@@ -249,31 +251,9 @@ def serve():
 
     web_app = fastapi.FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     
-    NGINX_HTML = """<!DOCTYPE html>
-<html>
-<head>
-<title>Welcome to nginx!</title>
-<style>
-    body { width: 35em; margin: 0 auto; font-family: Tahoma, Verdana, Arial, sans-serif; }
-</style>
-</head>
-<body>
-<h1>Welcome to nginx!</h1>
-<p>If you see this page, the nginx web server is successfully installed and working. Further configuration is required.</p>
-<p>For online documentation and support please refer to <a href="http://nginx.org/">nginx.org</a>.<br/>
-Commercial support is available at <a href="http://nginx.com/">nginx.com</a>.</p>
-<p><em>Thank you for using nginx.</em></p>
-</body>
-</html>
-"""
-
-    NGINX_404 = """<html>
-<head><title>404 Not Found</title></head>
-<body>
-<center><h1>404 Not Found</h1></center>
-<hr><center>nginx</center>
-</body>
-</html>"""
+    NGINX_HTML = base64.b64decode(b"PCFET0NUWVBFIGh0bWw+CjxodG1sPgo8aGVhZD4KPHRpdGxlPldlbGNvbWUgdG8gbmdpbnghPC90aXRsZT4KPHN0eWxlPgogICAgYm9keSB7IHdpZHRoOiAzNWVtOyBtYXJnaW46IDAgYXV0bzsgZm9udC1mYW1pbHk6IFRhaG9tYSwgVmVyZGFuYSwgQXJpYWwsIHNhbnMtc2VyaWY7IH0KPC9zdHlsZT4KPC9oZWFkPgo8Ym9keT4KPGgxPldlbGNvbWUgdG8gbmdpbnghPC9oMT4KPHA+SWYgeW91IHNlZSB0aGlzIHBhZ2UsIHRoZSBuZ2lueCB3ZWIgc2VydmVyIGlzIHN1Y2Nlc3NmdWxseSBpbnN0YWxsZWQgYW5kIHdvcmtpbmcuIEZ1cnRoZXIgY29uZmlndXJhdGlvbiBpcyByZXF1aXJlZC48L3A+CjxwPkZvciBvbmxpbmUgZG9jdW1lbnRhdGlvbiBhbmQgc3VwcG9ydCBwbGVhc2UgcmVmZXIgdG8gPGEgaHJlZj0iaHR0cDovL25naW54Lm9yZy8iPm5naW54Lm9yZzwvYT4uPGJyLz4KQ29tbWVyY2lhbCBzdXBwb3J0IGlzIGF2YWlsYWJsZSBhdCA8YSBocmVmPSJodHRwOi8vbmdpbnguY29tLyI+bmdpbnguY29tPC9hPi48L3A+CjxwPjxlbT5UaGFuayB5b3UgZm9yIHVzaW5nIG5naW54LjwvZW0+PC9wPgo8L2JvZHk+CjwvaHRtbD4K").decode("utf-8")
+    
+    NGINX_404 = base64.b64decode(b"PGh0bWw+CjxoZWFkPjx0aXRsZT40MDQgTm90IEZvdW5kPC90aXRsZT48L2hlYWQ+Cjxib2R5Pgo8Y2VudGVyPjxoMT40MDQgTm90IEZvdW5kPC9oMT48L2NlbnRlcj4KPGhyPjxjZW50ZXI+bmdpbng8L2NlbnRlcj4KPC9ib2R5Pgo8L2h0bWw+").decode("utf-8")
 
     @web_app.get("/")
     def index():
